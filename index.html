@@ -192,15 +192,22 @@ const C_ACT = BRAND.teal, C_BUD = BRAND.paleTeal, C_INC = '#16a34a', C_DEC = '#d
 let CURRENT, PREV, QTD, YTD, TTM, TTM_LBL, PERIOD_LABEL;
 
 function setPeriods(months) {
-  const sorted = [...months].sort();
+  const sorted = [...new Set(months)].filter(Boolean).sort();
+  if (!sorted.length) {
+    throw new Error('No usable month-end dates came back from Q.financials (0 rows, or every MONTH_END_DT failed to parse). Check Snowflake credentials/permissions and that DEPARTMENT_NAME values still match.');
+  }
   CURRENT = sorted[sorted.length - 1];
   PREV    = sorted[sorted.length - 2] || sorted[0];
   YTD = sorted.filter(d => d >= '2026-02-28');
   const qMap = { '02':'Q1','03':'Q1','04':'Q1','05':'Q2','06':'Q2','07':'Q2','08':'Q3','09':'Q3','10':'Q3','11':'Q4','12':'Q4','01':'Q4' };
   const curMo = CURRENT.slice(5,7);
   const curQ  = qMap[curMo];
+  if (!curQ) {
+    console.warn('setPeriods: unrecognized month key from CURRENT =', CURRENT, '(parsed month:', curMo, ') — sorted months were:', sorted);
+  }
   const qMonths = { Q1:['02','03','04'], Q2:['05','06','07'], Q3:['08','09','10'], Q4:['11','12','01'] };
-  QTD = sorted.filter(d => qMonths[curQ].includes(d.slice(5,7)) && d >= YTD[0]);
+  const curQMonths = qMonths[curQ] || [curMo]; // fall back to just the current month so QTD never crashes
+  QTD = sorted.filter(d => curQMonths.includes(d.slice(5,7)) && d >= YTD[0]);
   TTM = sorted.slice(-12);
   TTM_LBL = TTM.map(d => { const mo=['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']; return mo[+d.slice(5,7)]+'-'+d.slice(2,4); });
   const moName = ['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
@@ -794,7 +801,8 @@ async function loadAll() {
     buildCommitted(vActData, prepaidData);
     document.getElementById('loadingOverlay').style.display = 'none';
   } catch(e) {
-    msg.textContent = 'Error: ' + e.message;
+    console.error('People dashboard failed to load:', e);
+    msg.textContent = 'Error: ' + e.message + ' (see browser console for the full stack trace)';
     const btn = document.createElement('button');
     btn.textContent = '↺ Retry';
     btn.style.cssText = 'margin-top:12px;padding:8px 20px;background:#63b3ed;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px';
