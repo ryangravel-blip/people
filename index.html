@@ -206,6 +206,14 @@ const TRAILING_12_START = (() => {
   const endOfThatMonth = new Date(Date.UTC(startOfWindow.getUTCFullYear(), startOfWindow.getUTCMonth() + 1, 0));
   return endOfThatMonth.toISOString().slice(0, 10);
 })();
+// First day of CLOSE_CUTOFF's month, e.g. '2026-05-01' for '2026-05-31'. Computed in JS and
+// passed into SQL as a literal instead of calling DATE_TRUNC('month', ...) — Snowflake's
+// DATE_TRUNC doesn't accept a bare VARCHAR literal without an explicit ::DATE cast, so this
+// sidesteps that entirely.
+const CLOSE_CUTOFF_MONTH_START = (() => {
+  const [y, m] = CLOSE_CUTOFF.split('-').map(Number);
+  return `${y}-${String(m).padStart(2,'0')}-01`;
+})();
 let CURRENT, PREV, QTD, YTD, TTM, TTM_LBL, PERIOD_LABEL;
 
 function setPeriods(months) {
@@ -416,14 +424,14 @@ const Q = {
   hcBridge: `
     SELECT 'Hire' as EVT, COALESCE(NETSUITE,'') as DEPT, COUNT(*) as CNT
     FROM load.finance_sandbox.mrp_employee_snap
-    WHERE START_DT BETWEEN DATE_TRUNC('month','${CLOSE_CUTOFF}')
+    WHERE START_DT BETWEEN '${CLOSE_CUTOFF_MONTH_START}'
                        AND '${CLOSE_CUTOFF}'
       AND C_PARENT_DEPT = 'G&A' AND NETSUITE IN ${PEOPLE_SUBDEPTS}
     GROUP BY NETSUITE
     UNION ALL
     SELECT TERMINATED_REASON, COALESCE(NETSUITE,''), COUNT(*)
     FROM load.finance_sandbox.mrp_employee_snap
-    WHERE DEPARTURE_DT BETWEEN DATE_TRUNC('month','${CLOSE_CUTOFF}')
+    WHERE DEPARTURE_DT BETWEEN '${CLOSE_CUTOFF_MONTH_START}'
                            AND '${CLOSE_CUTOFF}'
       AND TERMINATED_REASON IS NOT NULL AND TERMINATED_REASON!=''
       AND C_PARENT_DEPT = 'G&A' AND NETSUITE IN ${PEOPLE_SUBDEPTS}
