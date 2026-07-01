@@ -189,12 +189,29 @@ const C_ACT = BRAND.teal, C_BUD = BRAND.paleTeal, C_INC = '#16a34a', C_DEC = '#d
 
 // ── PERIOD CONFIG (update when rolling forward) ──────
 // FY27 at Amperity: Feb 2026 – Jan 2027
+//
+// CLOSE_CUTOFF = last CLOSED month. Update this by hand once the books close each month.
+// Do NOT infer "current month" from whatever's newest in mrp_financials — Snowflake often
+// has preliminary/accrual rows for the in-progress month before the formal close (they get
+// reversed and restated later), which is exactly what happened here: this dashboard was
+// showing June actuals vs. June budget before June had actually closed. Filtering to
+// CLOSE_CUTOFF keeps that from happening even if partial data for a later month shows up.
+const CLOSE_CUTOFF = '2026-05-31';
+// Month-end date 11 months before CLOSE_CUTOFF's month — start of the trailing-12 window
+// used by the financials/vendor queries below. Computed here (plain JS date math) rather
+// than with Snowflake DATEADD, so there's one less place date arithmetic can go sideways.
+const TRAILING_12_START = (() => {
+  const [y, m] = CLOSE_CUTOFF.split('-').map(Number);
+  const startOfWindow = new Date(Date.UTC(y, m - 1 - 11, 1));
+  const endOfThatMonth = new Date(Date.UTC(startOfWindow.getUTCFullYear(), startOfWindow.getUTCMonth() + 1, 0));
+  return endOfThatMonth.toISOString().slice(0, 10);
+})();
 let CURRENT, PREV, QTD, YTD, TTM, TTM_LBL, PERIOD_LABEL;
 
 function setPeriods(months) {
-  const sorted = [...new Set(months)].filter(Boolean).sort();
+  const sorted = [...new Set(months)].filter(d => d && d <= CLOSE_CUTOFF).sort();
   if (!sorted.length) {
-    throw new Error('No usable month-end dates came back from Q.financials (0 rows, or every MONTH_END_DT failed to parse). Check Snowflake credentials/permissions and that DEPARTMENT_NAME values still match.');
+    throw new Error(`No usable month-end dates <= CLOSE_CUTOFF (${CLOSE_CUTOFF}) came back from Q.financials. Check Snowflake credentials/permissions, that DEPARTMENT_NAME values still match, and that CLOSE_CUTOFF is still correct.`);
   }
   CURRENT = sorted[sorted.length - 1];
   PREV    = sorted[sorted.length - 2] || sorted[0];
@@ -349,7 +366,7 @@ const Q = {
            COALESCE(C_EXPENSE_CATEGORY,'') as C_EXPENSE_CATEGORY,
            SUM(AMT) as AMT
     FROM load.finance_sandbox.mrp_financials
-    WHERE MONTH_END_DT >= DATEADD('month',-12,LAST_DAY(DATEADD('month',-1,CURRENT_DATE())))
+    WHERE MONTH_END_DT BETWEEN '${TRAILING_12_START}' AND '${CLOSE_CUTOFF}'
       AND C_PL_INCLUDE = TRUE
       AND DEPARTMENT_NAME IN ${PEOPLE_SUBDEPTS_FULL}
       AND COALESCE(C_PL_CLASS,'') != 'Overhead'
@@ -368,9 +385,13 @@ const Q = {
       AND C_REVENUE IS NULL
       AND COALESCE(C_PL_CLASS,'') != 'Overhead'
       AND ACCOUNT_CODE != 'Total_HC_EOM'
+      AND TIME_MONTH_END <= '${CLOSE_CUTOFF}'
     GROUP BY TIME_MONTH_END,LEVEL_NAME,C_EXPENSE_CATEGORY
     ORDER BY TIME_MONTH_END`,
 
+  // mrp_employee_snap has one column per month-end date (not a date field), so this can't
+  // reference CLOSE_CUTOFF dynamically. Keep this trailing-12 column list in sync with
+  // CLOSE_CUTOFF by hand — same limitation noted on Q.financials/Q.vendorActuals above.
   headcount: `
     SELECT COALESCE(NETSUITE,'Unassigned') as DEPT, EMPLOYEE_TYPE,
            SUM("2025-06-30") as HC_JUN25, SUM("2025-07-31") as HC_JUL25,
@@ -389,21 +410,21 @@ const Q = {
     WHERE VERSION_NAME = '2026.3.6 - FY27 Final BoD Approved'
       AND LEVEL_NAME IN ${PEOPLE_LEVEL_NAMES}
       AND ACCOUNT_CODE = 'Total_HC_EOM'
-      AND TIME_MONTH_END = LAST_DAY(DATEADD('month',-1,CURRENT_DATE()))
+      AND TIME_MONTH_END = '${CLOSE_CUTOFF}'
     GROUP BY LEVEL_NAME`,
 
   hcBridge: `
     SELECT 'Hire' as EVT, COALESCE(NETSUITE,'') as DEPT, COUNT(*) as CNT
     FROM load.finance_sandbox.mrp_employee_snap
-    WHERE START_DT BETWEEN DATE_TRUNC('month',DATEADD('month',-1,CURRENT_DATE()))
-                       AND LAST_DAY(DATEADD('month',-1,CURRENT_DATE()))
+    WHERE START_DT BETWEEN DATE_TRUNC('month','${CLOSE_CUTOFF}')
+                       AND '${CLOSE_CUTOFF}'
       AND C_PARENT_DEPT = 'G&A' AND NETSUITE IN ${PEOPLE_SUBDEPTS}
     GROUP BY NETSUITE
     UNION ALL
     SELECT TERMINATED_REASON, COALESCE(NETSUITE,''), COUNT(*)
     FROM load.finance_sandbox.mrp_employee_snap
-    WHERE DEPARTURE_DT BETWEEN DATE_TRUNC('month',DATEADD('month',-1,CURRENT_DATE()))
-                           AND LAST_DAY(DATEADD('month',-1,CURRENT_DATE()))
+    WHERE DEPARTURE_DT BETWEEN DATE_TRUNC('month','${CLOSE_CUTOFF}')
+                           AND '${CLOSE_CUTOFF}'
       AND TERMINATED_REASON IS NOT NULL AND TERMINATED_REASON!=''
       AND C_PARENT_DEPT = 'G&A' AND NETSUITE IN ${PEOPLE_SUBDEPTS}
     GROUP BY TERMINATED_REASON,NETSUITE`,
@@ -417,7 +438,7 @@ const Q = {
            COALESCE(CUSTOMER_VENDOR_NAME,'') as CUSTOMER_VENDOR_NAME,
            SUM(AMT) as AMT
     FROM load.finance_sandbox.mrp_financials
-    WHERE MONTH_END_DT >= DATEADD('month',-12,LAST_DAY(DATEADD('month',-1,CURRENT_DATE())))
+    WHERE MONTH_END_DT BETWEEN '${TRAILING_12_START}' AND '${CLOSE_CUTOFF}'
       AND C_PL_INCLUDE = TRUE
       AND DEPARTMENT_NAME IN ${PEOPLE_SUBDEPTS_FULL}
       AND COALESCE(C_PL_CLASS,'') != 'Overhead'
@@ -440,19 +461,19 @@ const Q = {
       AND LEVEL_NAME IN ${PEOPLE_LEVEL_NAMES}
       AND C_PL_INCLUDE = 1
       AND COALESCE(C_EXPENSE_CATEGORY,'') IN ('SaaS Tooling','Administrative','Professional Services','Contract Labor')
-      AND TIME_MONTH_END BETWEEN '2026-02-28' AND LAST_DAY(DATEADD('month',-1,CURRENT_DATE()))
+      AND TIME_MONTH_END BETWEEN '2026-02-28' AND '${CLOSE_CUTOFF}'
     GROUP BY TIME_MONTH_END, LEVEL_NAME, C_EXPENSE_CATEGORY, VENDOR
     HAVING SUM(VALUE) != 0
     ORDER BY TIME_MONTH_END`,
 
   // Committed/prepaid spend remaining for the rest of FY27 (now through Jan-27).
-  // NOTE: mrp_prepaid_spend has one column per month-end date, so the "current month" and
-  // "FY27 end" columns below are hardcoded literals — update both when rolling the period
-  // forward (same limitation as the CURRENT/YTD constants at the top of this file).
+  // NOTE: mrp_prepaid_spend has one column per month-end date, so the "current month" side
+  // ties to CLOSE_CUTOFF automatically, but the "FY27 end" column is still a separate
+  // hardcoded literal — bump it once a year when FY27 rolls to FY28.
   prepaid: `
     SELECT VENDOR_NAME, DEPARTMENT,
            COALESCE(C_EXPENSE_CATEGORY,'') as C_EXPENSE_CATEGORY,
-           COALESCE("'2026-05-31'",0) - COALESCE("'2027-01-31'",0) as COMMITTED_REMAINING_FY27
+           COALESCE("'${CLOSE_CUTOFF}'",0) - COALESCE("'2027-01-31'",0) as COMMITTED_REMAINING_FY27
     FROM load.finance_sandbox.mrp_prepaid_spend
     WHERE C_PARENT_DEPT = 'G&A'
       AND DEPARTMENT IN ${PEOPLE_SUBDEPTS_FULL}
