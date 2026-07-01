@@ -230,6 +230,18 @@ const vc = (a,b,dir=1) => {
   return diff*dir>0?'var-good':'var-bad';
 };
 
+// Snowflake REST API v2 returns DATE columns as integer day offsets from 1970-01-01,
+// not "YYYY-MM-DD" strings. Convert; passes through unchanged if already a date string
+// (e.g. when running inside Cowork, where the MCP tool already returns formatted dates).
+function parseDate(v) {
+  if (!v && v !== 0) return '';
+  const s = String(v);
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+  const n = parseInt(s, 10);
+  if (isNaN(n)) return s;
+  return new Date(n * 86400000).toISOString().slice(0, 10);
+}
+
 // ── TABLE HELPERS (9-col: Month / QTD / YTD, each Act|Bud|Var) ──
 function makeHead9(labelW='240px') {
   const moName=['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
@@ -445,7 +457,7 @@ function preProcessFin(rows) {
   const exp = {}; // exp[dt][subteam][cat] = amt
   for (const r of rows) {
     if (r.ACCOUNT_TYPE === 'Income') continue;
-    const dt   = r.MONTH_END_DT ? r.MONTH_END_DT.slice(0,10) : '';
+    const dt   = parseDate(r.MONTH_END_DT);
     const amt  = +(r.AMT||0);
     const rawDept = (r.DEPARTMENT_NAME||'').replace('G&A : ','');
     const dept = SUBTEAM_MAP[rawDept] || rawDept;
@@ -459,7 +471,7 @@ function preProcessFin(rows) {
 function preProcessBud(rows) {
   const exp = {}; // exp[dt][subteam][cat] = amt
   for (const r of rows) {
-    const dt   = r.TIME_MONTH_END ? r.TIME_MONTH_END.slice(0,10) : '';
+    const dt   = parseDate(r.TIME_MONTH_END);
     const amt  = +(r.BUDGET||0);
     const dept = LEVEL_TO_SUBTEAM[r.LEVEL_NAME] || r.LEVEL_NAME;
     const cat  = r.C_EXPENSE_CATEGORY||'';
@@ -653,7 +665,7 @@ function accountFallback(accountName) {
 function preProcessVendor(rows, dateField, amtField, vendorField, accountField) {
   const exp = {}; // exp[dt][vendor] = amt
   for (const r of rows) {
-    const dt = r[dateField] ? r[dateField].slice(0, 10) : '';
+    const dt = parseDate(r[dateField]);
     const amt = +(r[amtField] || 0);
     const raw = r[vendorField] || '';
     const vendor = raw ? normalizeVendor(raw) : normalizeVendor(accountFallback(accountField ? r[accountField] : ''));
@@ -712,7 +724,7 @@ function buildVendors(vendorActualsRaw, vendorBudgetRaw) {
 // ── BUILD: COMMITTED SPEND ─────────────────────────────
 function buildCommitted(vendorActualsRaw, prepaidRows) {
   // All categories except Employee Compensation & Benefits (already excluded at the query level).
-  const ytdRows = vendorActualsRaw.filter(r => YTD.includes((r.MONTH_END_DT || '').slice(0, 10)));
+  const ytdRows = vendorActualsRaw.filter(r => YTD.includes(parseDate(r.MONTH_END_DT)));
   const vAct = preProcessVendor(ytdRows, 'MONTH_END_DT', 'AMT', 'CUSTOMER_VENDOR_NAME', 'ACCOUNT_NAME');
 
   const committed = {}; // vendor -> remaining
@@ -771,7 +783,7 @@ async function loadAll() {
     ]);
     msg.textContent = 'Building dashboard…';
 
-    const months = [...new Set(finData.map(r=>r.MONTH_END_DT.slice(0,10)))].sort();
+    const months = [...new Set(finData.map(r=>parseDate(r.MONTH_END_DT)))].filter(Boolean).sort();
     setPeriods(months);
 
     const fin = preProcessFin(finData);
