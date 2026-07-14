@@ -196,7 +196,7 @@ const C_ACT = BRAND.teal, C_BUD = BRAND.paleTeal, C_INC = '#16a34a', C_DEC = '#d
 // reversed and restated later), which is exactly what happened here: this dashboard was
 // showing June actuals vs. June budget before June had actually closed. Filtering to
 // CLOSE_CUTOFF keeps that from happening even if partial data for a later month shows up.
-const CLOSE_CUTOFF = '2026-05-31';
+const CLOSE_CUTOFF = '2026-06-30';
 // Month-end date 11 months before CLOSE_CUTOFF's month — start of the trailing-12 window
 // used by the financials/vendor queries below. Computed here (plain JS date math) rather
 // than with Snowflake DATEADD, so there's one less place date arithmetic can go sideways.
@@ -402,12 +402,12 @@ const Q = {
   // CLOSE_CUTOFF by hand — same limitation noted on Q.financials/Q.vendorActuals above.
   headcount: `
     SELECT COALESCE(NETSUITE,'Unassigned') as DEPT, EMPLOYEE_TYPE,
-           SUM("2025-06-30") as HC_JUN25, SUM("2025-07-31") as HC_JUL25,
-           SUM("2025-08-31") as HC_AUG25, SUM("2025-09-30") as HC_SEP25,
-           SUM("2025-10-31") as HC_OCT25, SUM("2025-11-30") as HC_NOV25,
-           SUM("2025-12-31") as HC_DEC25, SUM("2026-01-31") as HC_JAN26,
-           SUM("2026-02-28") as HC_FEB26, SUM("2026-03-31") as HC_MAR26,
-           SUM("2026-04-30") as HC_APR26, SUM("2026-05-31") as HC_MAY26
+           SUM("2025-07-31") as HC_JUL25, SUM("2025-08-31") as HC_AUG25,
+           SUM("2025-09-30") as HC_SEP25, SUM("2025-10-31") as HC_OCT25,
+           SUM("2025-11-30") as HC_NOV25, SUM("2025-12-31") as HC_DEC25,
+           SUM("2026-01-31") as HC_JAN26, SUM("2026-02-28") as HC_FEB26,
+           SUM("2026-03-31") as HC_MAR26, SUM("2026-04-30") as HC_APR26,
+           SUM("2026-05-31") as HC_MAY26, SUM("2026-06-30") as HC_JUN26
     FROM load.finance_sandbox.mrp_employee_snap
     WHERE C_PARENT_DEPT = 'G&A' AND NETSUITE IN ${PEOPLE_SUBDEPTS}
     GROUP BY NETSUITE,EMPLOYEE_TYPE ORDER BY DEPT,EMPLOYEE_TYPE`,
@@ -601,15 +601,18 @@ function buildExpense(fin, bud) {
 }
 
 // ── BUILD: HEADCOUNT ────────────────────────────────────
+// Note: the "apr"/"may" field names below are stale from the original build (they held
+// April/May headcount at the time). They now hold PREV/CURRENT month headcount respectively
+// (currently May/June) — kept as-is to minimize diff noise on each monthly roll-forward.
 function buildHeadcount(hcRows, hcBridgeRows, hcBudRows) {
-  const MONTHS = ['HC_JUN25','HC_JUL25','HC_AUG25','HC_SEP25','HC_OCT25','HC_NOV25',
-                  'HC_DEC25','HC_JAN26','HC_FEB26','HC_MAR26','HC_APR26','HC_MAY26'];
+  const MONTHS = ['HC_JUL25','HC_AUG25','HC_SEP25','HC_OCT25','HC_NOV25','HC_DEC25',
+                  'HC_JAN26','HC_FEB26','HC_MAR26','HC_APR26','HC_MAY26','HC_JUN26'];
   const byDept = {};
   for (const r of hcRows) {
     const d = SUBTEAM_MAP[r.DEPT] || r.DEPT;
     if (!byDept[d]) byDept[d] = {apr:0, may:0, trend:new Array(12).fill(0)};
-    byDept[d].apr += +(r.HC_APR26||0);
-    byDept[d].may += +(r.HC_MAY26||0);
+    byDept[d].apr += +(r.HC_MAY26||0);
+    byDept[d].may += +(r.HC_JUN26||0);
     MONTHS.forEach((m,i) => { byDept[d].trend[i] += +(r[m]||0); });
   }
   const budMap = {};
@@ -659,7 +662,7 @@ function buildHeadcount(hcRows, hcBridgeRows, hcBudRows) {
     {yMin:Math.max(0,Math.min(totApr,totMay)-3),yMax:Math.max(totApr,totMay)+3}
   );
 
-  const trendLabels=['Jun-25','Jul-25','Aug-25','Sep-25','Oct-25','Nov-25','Dec-25','Jan-26','Feb-26','Mar-26','Apr-26','May-26'];
+  const trendLabels=['Jul-25','Aug-25','Sep-25','Oct-25','Nov-25','Dec-25','Jan-26','Feb-26','Mar-26','Apr-26','May-26','Jun-26'];
   new Chart(document.getElementById('hcTrendChart'),{
     type:'line',
     data:{labels:trendLabels,datasets:[{label:'Total Headcount',data:trendTotals,borderColor:BRAND.teal,backgroundColor:'rgba(128,199,209,0.12)',fill:true,borderWidth:2.5,tension:0.3,pointBackgroundColor:BRAND.teal,pointBorderColor:'#fff',pointBorderWidth:2,pointRadius:5}]},
